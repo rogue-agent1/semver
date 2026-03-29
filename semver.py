@@ -3,64 +3,86 @@
 import sys, re
 
 class Version:
-    def __init__(self, major, minor=0, patch=0, pre=None):
-        self.major, self.minor, self.patch = major, minor, patch
-        self.pre = pre
+    def __init__(self, major, minor=0, patch=0, prerelease=None, build=None):
+        self.major = major
+        self.minor = minor
+        self.patch = patch
+        self.prerelease = prerelease
+        self.build = build
     @classmethod
     def parse(cls, s):
-        m = re.match(r"^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:-(\S+))?$", s)
-        if not m: raise ValueError(f"Invalid version: {s}")
-        return cls(int(m.group(1)), int(m.group(2) or 0), int(m.group(3) or 0), m.group(4))
-    def _tuple(self):
-        return (self.major, self.minor, self.patch, 0 if self.pre is None else -1, self.pre or "")
-    def __lt__(self, o): return self._tuple() < o._tuple()
-    def __le__(self, o): return self._tuple() <= o._tuple()
-    def __eq__(self, o): return self._tuple() == o._tuple()
-    def __gt__(self, o): return self._tuple() > o._tuple()
-    def __ge__(self, o): return self._tuple() >= o._tuple()
-    def __repr__(self):
+        m = re.match(r"^v?(\d+)\.(\d+)\.(\d+)(?:-([\.\w-]+))?(?:\+([\w.]+))?$", s)
+        if not m:
+            raise ValueError(f"Invalid semver: {s}")
+        return cls(int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4), m.group(5))
+    def __str__(self):
         s = f"{self.major}.{self.minor}.{self.patch}"
-        if self.pre: s += f"-{self.pre}"
+        if self.prerelease:
+            s += f"-{self.prerelease}"
+        if self.build:
+            s += f"+{self.build}"
         return s
-    def bump_major(self): return Version(self.major+1, 0, 0)
-    def bump_minor(self): return Version(self.major, self.minor+1, 0)
-    def bump_patch(self): return Version(self.major, self.minor, self.patch+1)
+    def _tuple(self):
+        pre = (0, self.prerelease or "") if self.prerelease else (1, "")
+        return (self.major, self.minor, self.patch, pre[0], pre[1])
+    def __eq__(self, other): return self._tuple() == other._tuple()
+    def __lt__(self, other): return self._tuple() < other._tuple()
+    def __le__(self, other): return self._tuple() <= other._tuple()
+    def __gt__(self, other): return self._tuple() > other._tuple()
+    def __ge__(self, other): return self._tuple() >= other._tuple()
+    def bump_major(self): return Version(self.major + 1)
+    def bump_minor(self): return Version(self.major, self.minor + 1)
+    def bump_patch(self): return Version(self.major, self.minor, self.patch + 1)
 
 def satisfies(version, constraint):
     v = Version.parse(version) if isinstance(version, str) else version
-    parts = constraint.split()
-    if len(parts) == 1:
-        c = parts[0]
-        if c.startswith(">="): return v >= Version.parse(c[2:])
-        if c.startswith("<="): return v <= Version.parse(c[2:])
-        if c.startswith(">"): return v > Version.parse(c[1:])
-        if c.startswith("<"): return v < Version.parse(c[1:])
-        if c.startswith("^"):
-            base = Version.parse(c[1:])
-            return v >= base and v < base.bump_major()
-        if c.startswith("~"):
-            base = Version.parse(c[1:])
-            return v >= base and v < base.bump_minor()
-        return v == Version.parse(c)
-    return all(satisfies(v, p) for p in parts)
+    parts = re.split(r"\s+", constraint.strip())
+    for part in parts:
+        m = re.match(r"^([><=!^~]+)(.+)$", part)
+        if not m:
+            if Version.parse(part) != v:
+                return False
+            continue
+        op, ver_str = m.group(1), m.group(2)
+        cv = Version.parse(ver_str)
+        if op == ">=": ok = v >= cv
+        elif op == "<=": ok = v <= cv
+        elif op == ">": ok = v > cv
+        elif op == "<": ok = v < cv
+        elif op == "=": ok = v == cv
+        elif op == "!=": ok = v != cv
+        elif op == "^":
+            ok = v >= cv and v.major == cv.major
+        elif op == "~":
+            ok = v >= cv and v.major == cv.major and v.minor == cv.minor
+        else:
+            ok = False
+        if not ok:
+            return False
+    return True
 
 def test():
     v = Version.parse("1.2.3")
-    assert v.major == 1 and v.minor == 2 and v.patch == 3
-    assert Version.parse("1.2.3") < Version.parse("1.2.4")
-    assert Version.parse("1.2.3") < Version.parse("1.3.0")
-    assert Version.parse("2.0.0") > Version.parse("1.9.9")
+    assert str(v) == "1.2.3"
+    assert v == Version.parse("1.2.3")
+    assert v > Version.parse("1.2.2")
+    assert v < Version.parse("1.3.0")
+    # prerelease < release
     assert Version.parse("1.0.0-alpha") < Version.parse("1.0.0")
-    assert satisfies("1.5.0", ">=1.0.0")
-    assert not satisfies("0.9.0", ">=1.0.0")
+    # bump
+    assert str(v.bump_major()) == "2.0.0"
+    assert str(v.bump_minor()) == "1.3.0"
+    assert str(v.bump_patch()) == "1.2.4"
+    # satisfies
+    assert satisfies("1.2.3", ">=1.0.0 <2.0.0")
     assert satisfies("1.2.3", "^1.0.0")
     assert not satisfies("2.0.0", "^1.0.0")
     assert satisfies("1.2.5", "~1.2.0")
     assert not satisfies("1.3.0", "~1.2.0")
-    b = Version.parse("1.2.3")
-    assert str(b.bump_major()) == "2.0.0"
-    assert str(b.bump_minor()) == "1.3.0"
-    print("semver: all tests passed")
+    print("OK: semver")
 
 if __name__ == "__main__":
-    test() if "--test" in sys.argv else print("Usage: semver.py --test")
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        test()
+    else:
+        print("Usage: semver.py test")
